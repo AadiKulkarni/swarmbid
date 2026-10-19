@@ -31,8 +31,6 @@ self.onmessage = (event: MessageEvent<MilpRequest>) => {
     timedOut: result.timedOut,
     feasible: result.feasible,
   };
-  // Touch scoreAssignment so the helper stays tree-shaken only if unused —
-  // keep export available for debugging payloads.
   void scoreAssignment;
-  (self as DedicatedWorkerGlobalScope).postMessage(response);
+  self.postMessage(response);
 };

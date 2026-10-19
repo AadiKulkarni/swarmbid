@@ -3,8 +3,16 @@
  * hovered robot bundle-path highlight.
  */
 
-import type { CbbaAgent, SimulationSnapshot, Vec2 } from "@swarmbid/sim";
+import type {
+  CbbaAgent,
+  RobotState,
+  SimEvent,
+  SimulationSnapshot,
+  TaskState,
+  Vec2,
+} from "@swarmbid/sim";
 import { useEffect, useRef } from "react";
+
 
 const CELL = 22;
 const PAD = 16;
@@ -38,13 +46,13 @@ export function WorldCanvas({ snapshot, agents, hoveredRobotId, onHoverRobot }: 
       return;
     }
     const now = performance.now();
-    const dropEvents = snapshot.events.filter((e) => e.kind === "message_dropped");
+    const dropEvents = snapshot.events.filter(
+      (e: SimEvent): e is Extract<SimEvent, { kind: "message_dropped" }> =>
+        e.kind === "message_dropped",
+    );
     const latest = dropEvents.slice(-snapshot.droppedMessageIds.length);
     flashesRef.current = latest.map((ev) => {
-      if (ev.kind !== "message_dropped") {
-        return { x: 0, y: 0, until: now + 280 };
-      }
-      const sender = snapshot.world.robots.find((r) => r.id === ev.message.from);
+      const sender = snapshot.world.robots.find((r: RobotState) => r.id === ev.message.from);
       return {
         x: sender?.position.x ?? 0,
         y: sender?.position.y ?? 0,
@@ -92,12 +100,12 @@ export function WorldCanvas({ snapshot, agents, hoveredRobotId, onHoverRobot }: 
       // Hovered robot path highlight
       if (hoveredRobotId) {
         const agent = agents.get(hoveredRobotId);
-        const robot = snapshot.world.robots.find((r) => r.id === hoveredRobotId);
+        const robot = snapshot.world.robots.find((r: RobotState) => r.id === hoveredRobotId);
         if (agent && robot) {
           const pathIds = agent.getPath();
           const points: Vec2[] = [robot.position];
           for (const id of pathIds) {
-            const task = snapshot.world.tasks.find((t) => t.id === id);
+            const task = snapshot.world.tasks.find((t: TaskState) => t.id === id);
             if (task) {
               points.push(task.position);
             }
@@ -123,7 +131,7 @@ export function WorldCanvas({ snapshot, agents, hoveredRobotId, onHoverRobot }: 
       ctx.lineWidth = 1.5;
       for (const robot of snapshot.world.robots) {
         for (const taskId of robot.assignedTaskIds) {
-          const task = snapshot.world.tasks.find((t) => t.id === taskId);
+          const task = snapshot.world.tasks.find((t: TaskState) => t.id === taskId);
           if (!task) {
             continue;
           }

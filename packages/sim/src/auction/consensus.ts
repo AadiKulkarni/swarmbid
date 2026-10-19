@@ -330,7 +330,7 @@ export function resolveConsensus(input: ConsensusInput): ConsensusResult {
   const updatedTables = new Map<string, WinningBid[]>();
   for (const robotId of input.localTables.keys()) {
     const mine: WinningBid[] = [];
-    for (const [taskId, entry] of best) {
+    for (const [, entry] of best) {
       if (entry.robotId === robotId) {
         mine.push(entry);
       }

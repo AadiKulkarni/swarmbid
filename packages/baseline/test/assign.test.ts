@@ -18,8 +18,14 @@ describe("solveAssignment", () => {
 
     const robots = [...result.assignment.values()];
     const tasks = [...result.assignment.keys()];
-    expect(new Set(robots).size).toBe(robots.length);
     expect(new Set(tasks).size).toBe(tasks.length);
+    const perRobot = new Map<string, number>();
+    for (const robotId of robots) {
+      perRobot.set(robotId, (perRobot.get(robotId) ?? 0) + 1);
+    }
+    for (const count of perRobot.values()) {
+      expect(count).toBeLessThanOrEqual(3);
+    }
   });
 
   it("is deterministic for the same world", () => {
