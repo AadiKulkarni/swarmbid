@@ -25,6 +25,7 @@ export {
 export type { BidInput, BundleBuildResult, InsertionResult } from "./auction/bid.js";
 export {
   applyConsensusMessage,
+  bidBeats,
   consensusActionForTask,
   createConsensusState,
   mergeTimestamps,
@@ -42,7 +43,9 @@ export type {
   WinningBid,
 } from "./auction/consensus.js";
 export {
+  assignmentFromWorldAndAgents,
   createAuctionSimulation,
+  isConflictFree,
   runAuction,
   syncAssignmentsToWorld,
 } from "./auction/run.js";

@@ -1,72 +1,134 @@
 /**
- * Property-test skeleton for the auction layer.
- *
- * Assertion bodies are left as [ME] — implement once computeBid and
- * resolveConsensus are filled in. Generators are ready so enabling the
- * properties is a matter of replacing the TODO throws.
+ * Property tests for CBBA auction convergence under lossy networks.
  */
 
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { computeBid } from "../src/auction/bid.js";
-import { resolveConsensus } from "../src/auction/consensus.js";
-import { createWorld } from "../src/world.js";
+import { assignmentFromAgents, isConflictFree, runAuction } from "../src/index.js";
 
-// Skipped until [ME] auction stubs are implemented; generators and intent kept ready.
-describe.skip("auction properties [ME]", () => {
-  it("no task assigned to two robots after convergence", () => {
+function countTaskClaims(agents: Map<string, { getBundle(): string[] }>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const agent of agents.values()) {
+    for (const taskId of agent.getBundle()) {
+      counts.set(taskId, (counts.get(taskId) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
 
+describe("auction properties", () => {
+  it("after convergence, no task is assigned to two robots", () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 1_000_000 }),
+        fc.integer({ min: 2, max: 6 }),
         fc.integer({ min: 2, max: 8 }),
-        fc.integer({ min: 2, max: 8 }),
-        (seed, robotCount, taskCount) => {
-          const world = createWorld({
-            width: 16,
-            height: 16,
-            robotCount,
-            taskCount,
-            seed,
+        fc.double({ min: 0, max: 0.5, noNaN: true }),
+        (seed, robotCount, taskCount, dropRate) => {
+          const result = runAuction({
+            world: {
+              width: 16,
+              height: 16,
+              robotCount,
+              taskCount,
+              seed,
+            },
+            network: {
+              dropRate,
+              minDelay: 0,
+              maxDelay: dropRate > 0 ? 2 : 0,
+              allowReorder: dropRate > 0,
+              partitions: [],
+            },
+            maxTicks: 150,
+            stableTicks: 3,
           });
 
-          // [ME] Run local bidding + consensus until assignment stabilizes,
-          // then assert each task id appears at most once in the assignment.
-          void world;
-          void computeBid;
-          void resolveConsensus;
-          throw new Error("TODO");
+          const claims = countTaskClaims(result.agents);
+          for (const count of claims.values()) {
+            expect(count).toBeLessThanOrEqual(1);
+          }
+          if (result.converged) {
+            expect(isConflictFree(result.agents)).toBe(true);
+          }
+        },
+      ),
+      { numRuns: 25 },
+    );
+  });
+
+  it("every reachable task eventually gets assigned when the network is usable", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 1_000_000 }),
+        fc.integer({ min: 3, max: 6 }),
+        fc.integer({ min: 2, max: 6 }),
+        fc.double({ min: 0, max: 0.3, noNaN: true }),
+        (seed, robotCount, taskCount, dropRate) => {
+          const result = runAuction({
+            world: {
+              width: 12,
+              height: 12,
+              robotCount,
+              taskCount,
+              seed,
+            },
+            network: {
+              dropRate,
+              minDelay: 0,
+              maxDelay: dropRate > 0 ? 1 : 0,
+              allowReorder: dropRate > 0,
+              partitions: [],
+            },
+            maxBundleSize: 3,
+            maxTicks: 200,
+            stableTicks: 3,
+          });
+
+          // Open grid ⇒ every task is reachable. With dropRate < 1 and no
+          // partition, CBBA should assign min(tasks, robots * L_t) tasks.
+          const capacity = robotCount * 3;
+          const expected = Math.min(taskCount, capacity);
+          expect(result.converged).toBe(true);
+          expect(result.assignment.size).toBe(expected);
         },
       ),
       { numRuns: 20 },
     );
   });
 
-  it("every reachable task eventually assigned", () => {
+  it("same seed produces an identical event log", () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 1_000_000 }),
-        fc.integer({ min: 2, max: 8 }),
-        fc.integer({ min: 1, max: 6 }),
-        (seed, robotCount, taskCount) => {
-          const world = createWorld({
-            width: 16,
-            height: 16,
-            robotCount,
-            taskCount,
-            seed,
-          });
+        fc.double({ min: 0, max: 0.5, noNaN: true }),
+        (seed, dropRate) => {
+          const opts = {
+            world: {
+              width: 10,
+              height: 10,
+              robotCount: 3,
+              taskCount: 4,
+              seed,
+            },
+            network: {
+              dropRate,
+              minDelay: 0,
+              maxDelay: 2,
+              allowReorder: true,
+              partitions: [],
+            },
+            maxTicks: 40,
+            stableTicks: 5,
+          } as const;
 
-          // [ME] After convergence on a connected network with dropRate 0,
-          // every task that a robot can reach (finite distance) must appear
-          // in the assignment map. Unreachable is not applicable on a finite
-          // open grid — all tasks are reachable.
-          void world;
-          void expect;
-          throw new Error("TODO");
+          const a = runAuction(opts);
+          const b = runAuction(opts);
+          expect(a.snapshot.events).toEqual(b.snapshot.events);
+          expect(assignmentFromAgents(a.agents)).toEqual(assignmentFromAgents(b.agents));
         },
       ),
-      { numRuns: 20 },
+      { numRuns: 15 },
     );
   });
 });

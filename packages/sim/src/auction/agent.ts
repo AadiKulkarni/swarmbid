@@ -18,6 +18,8 @@ export interface CbbaAgentOptions {
   robotId: string;
   peerIds: string[];
   maxBundleSize?: number;
+  /** Position used for scoring (frozen so movement does not churn bids). */
+  scoreOrigin: Vec2;
 }
 
 export interface CbbaAgent {
@@ -90,6 +92,10 @@ function stepToward(from: Vec2, to: Vec2): Vec2 {
 export function createCbbaAgent(options: CbbaAgentOptions): CbbaAgent {
   const maxBundleSize = options.maxBundleSize ?? DEFAULT_MAX_BUNDLE_SIZE;
   const state = createConsensusState(options.robotId, options.peerIds);
+  const scoreRobot = (input: RobotTickInput) => ({
+    ...input.robot,
+    position: options.scoreOrigin,
+  });
 
   const rebuildBundle = (input: RobotTickInput) => {
     // Drop collected tasks from local claims.
@@ -119,9 +125,10 @@ export function createCbbaAgent(options: CbbaAgentOptions): CbbaAgent {
     }
 
     const fresh = buildBundle({
-      robot: input.robot,
+      robot: scoreRobot(input),
       tasks: input.world.tasks,
       winningBids: state.y,
+      winningAgents: state.z,
       maxBundleSize,
       initialBundle: keptBundle,
       initialPath: keptPath,
@@ -187,19 +194,22 @@ export function createCbbaAgent(options: CbbaAgentOptions): CbbaAgent {
 
 /**
  * Build CBBA agents for every robot in a roster.
+ * `origins` maps robot id → scoring position (usually the initial world pose).
  */
 export function createCbbaAgents(
   robotIds: string[],
-  options?: { maxBundleSize?: number },
+  options?: { maxBundleSize?: number; origins?: Map<string, Vec2> },
 ): Map<string, CbbaAgent> {
   const agents = new Map<string, CbbaAgent>();
   for (const robotId of robotIds) {
+    const origin = options?.origins?.get(robotId) ?? { x: 0, y: 0 };
     agents.set(
       robotId,
       createCbbaAgent({
         robotId,
         peerIds: robotIds,
         maxBundleSize: options?.maxBundleSize,
+        scoreOrigin: origin,
       }),
     );
   }

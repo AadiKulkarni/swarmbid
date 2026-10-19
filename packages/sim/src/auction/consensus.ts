@@ -85,6 +85,28 @@ function stampOf(s: Map<string, number>, robotId: string): number {
 }
 
 /**
+ * True when (bidA, winnerA) should replace (bidB, winnerB).
+ * Higher bid wins; equal bids break ties by lexicographically smaller robot id.
+ */
+export function bidBeats(
+  bidA: number,
+  winnerA: string,
+  bidB: number,
+  winnerB: string,
+): boolean {
+  if (bidA !== bidB) {
+    return bidA > bidB;
+  }
+  if (winnerA === NO_WINNER) {
+    return false;
+  }
+  if (winnerB === NO_WINNER) {
+    return true;
+  }
+  return winnerA.localeCompare(winnerB) < 0;
+}
+
+/**
  * Table I action for one task when receiver `i` hears sender `k`.
  * Default is leave.
  */
@@ -105,14 +127,14 @@ export function consensusActionForTask(
   // Sender thinks winner is k
   if (zkj === k) {
     if (zij === i) {
-      return ykj > yij ? "update" : "leave";
+      return bidBeats(ykj, zkj, yij, zij) ? "update" : "leave";
     }
     if (zij === k) {
       return "update";
     }
     if (zij !== NO_WINNER) {
       // m ∉ {i, k}
-      return sk(zij) > si(zij) || ykj > yij ? "update" : "leave";
+      return sk(zij) > si(zij) || bidBeats(ykj, zkj, yij, zij) ? "update" : "leave";
     }
     return "update"; // none
   }
@@ -135,7 +157,7 @@ export function consensusActionForTask(
   if (zkj !== NO_WINNER) {
     const m = zkj;
     if (zij === i) {
-      return sk(m) > si(m) && ykj > yij ? "update" : "leave";
+      return sk(m) > si(m) && bidBeats(ykj, zkj, yij, zij) ? "update" : "leave";
     }
     if (zij === k) {
       return sk(m) > si(m) ? "update" : "reset";
@@ -148,7 +170,7 @@ export function consensusActionForTask(
       if (sk(m) > si(m) && sk(n) > si(n)) {
         return "update";
       }
-      if (sk(m) > si(m) && ykj > yij) {
+      if (sk(m) > si(m) && bidBeats(ykj, zkj, yij, zij)) {
         return "update";
       }
       if (sk(n) > si(n) && si(m) > sk(m)) {
@@ -194,8 +216,10 @@ function applyAction(
 
 /**
  * Release the first outbid bundle task and every task added after it.
- * Resets y/z for the cascading tasks so stale self-bids do not linger.
- * Returns the list of released task ids.
+ *
+ * Per CBBA: the outbid task keeps its consensus-updated y/z (so we remember
+ * who beat us), while every *later* bundle task has y/z reset because those
+ * marginal scores are no longer valid. Returns the released task ids.
  */
 export function releaseOutbidTasks(state: ConsensusState): string[] {
   const cut = state.bundle.findIndex((taskId) => winnerOf(state.z, taskId) !== state.robotId);
@@ -204,9 +228,13 @@ export function releaseOutbidTasks(state: ConsensusState): string[] {
   }
 
   const released = state.bundle.slice(cut);
-  for (const taskId of released) {
-    state.y.set(taskId, 0);
-    state.z.set(taskId, NO_WINNER);
+  // Reset y/z only for later tasks we still think we own. If consensus already
+  // wrote another winner for a later bundle task in this round, keep it.
+  for (const taskId of released.slice(1)) {
+    if (winnerOf(state.z, taskId) === state.robotId) {
+      state.y.set(taskId, 0);
+      state.z.set(taskId, NO_WINNER);
+    }
   }
   state.bundle = state.bundle.slice(0, cut);
   const releasedSet = new Set(released);

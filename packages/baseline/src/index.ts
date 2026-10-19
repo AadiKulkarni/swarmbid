@@ -6,5 +6,5 @@
  * comparisons in the UI and metrics.
  */
 
-export { solveAssignment } from "./assign.js";
-export type { AssignmentResult } from "./assign.js";
+export { scoreAssignment, solveAssignment } from "./assign.js";
+export type { AssignmentResult, SolveOptions } from "./assign.js";

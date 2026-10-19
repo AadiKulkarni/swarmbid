@@ -2,8 +2,10 @@
  * Helpers to run CBBA auctions to convergence for tests and benchmarks.
  */
 
+import { countDoubleAssigned, countUnassigned, totalRewardCollected } from "../metrics.js";
 import { Simulation, type SimulationOptions, type SimulationSnapshot } from "../simulation.js";
 import type { NetworkConfig, WorldConfig } from "../types.js";
+import { createWorld } from "../world.js";
 import {
   assignmentFromAgents,
   controllersFromAgents,
@@ -25,6 +27,7 @@ export interface AuctionRunOptions {
 export interface AuctionRunResult {
   snapshot: SimulationSnapshot;
   agents: Map<string, CbbaAgent>;
+  /** Assignment at the moment of convergence (before collection clears bundles). */
   assignment: Map<string, string>;
   converged: boolean;
   roundsToConverge: number | null;
@@ -41,6 +44,20 @@ function assignmentsEqual(a: Map<string, string>, b: Map<string, string>): boole
   for (const [k, v] of a) {
     if (b.get(k) !== v) {
       return false;
+    }
+  }
+  return true;
+}
+
+/** True when no task appears in more than one agent's bundle. */
+export function isConflictFree(agents: Map<string, CbbaAgent>): boolean {
+  const seen = new Set<string>();
+  for (const agent of agents.values()) {
+    for (const taskId of agent.getBundle()) {
+      if (seen.has(taskId)) {
+        return false;
+      }
+      seen.add(taskId);
     }
   }
   return true;
@@ -68,9 +85,16 @@ export function syncAssignmentsToWorld(
     };
   });
 
+  const world = { ...snapshot.world, robots };
   return {
     ...snapshot,
-    world: { ...snapshot.world, robots },
+    world,
+    metrics: {
+      ...snapshot.metrics,
+      totalRewardCollected: totalRewardCollected(world),
+      tasksDoubleAssigned: countDoubleAssigned(world),
+      tasksUnassigned: countUnassigned(world),
+    },
   };
 }
 
@@ -82,8 +106,11 @@ export function createAuctionSimulation(options: AuctionRunOptions): {
   agents: Map<string, CbbaAgent>;
 } {
   const ids = robotIds(options.world.robotCount);
+  const initial = createWorld(options.world);
+  const origins = new Map(initial.robots.map((r) => [r.id, { ...r.position }]));
   const agents = createCbbaAgents(ids, {
     maxBundleSize: options.maxBundleSize ?? DEFAULT_MAX_BUNDLE_SIZE,
+    origins,
   });
   const simOptions: SimulationOptions = {
     world: options.world,
@@ -104,16 +131,23 @@ export function runAuction(options: AuctionRunOptions): AuctionRunResult {
   let previous: Map<string, string> | null = null;
   let stableCount = 0;
   let roundsToConverge: number | null = null;
+  let assignmentAtConvergence: Map<string, string> | null = null;
   let snapshot = syncAssignmentsToWorld(sim.getState(), agents);
 
   for (let t = 0; t < maxTicks; t++) {
     snapshot = syncAssignmentsToWorld(sim.step(), agents);
-    const assignment = assignmentFromAgents(agents);
+    const assignment = assignmentFromWorldAndAgents(snapshot, agents);
 
-    if (previous !== null && assignmentsEqual(assignment, previous)) {
+    if (
+      previous !== null &&
+      assignmentsEqual(assignment, previous) &&
+      isConflictFree(agents) &&
+      assignment.size > 0
+    ) {
       stableCount += 1;
       if (stableCount >= stableTicks && roundsToConverge === null) {
         roundsToConverge = snapshot.world.tick - stableTicks;
+        assignmentAtConvergence = new Map(assignment);
         break;
       }
     } else {
@@ -125,8 +159,22 @@ export function runAuction(options: AuctionRunOptions): AuctionRunResult {
   return {
     snapshot,
     agents,
-    assignment: assignmentFromAgents(agents),
+    assignment: assignmentAtConvergence ?? assignmentFromWorldAndAgents(snapshot, agents),
     converged: roundsToConverge !== null,
     roundsToConverge,
   };
+}
+
+/** Bundle claims plus already-collected tasks. */
+export function assignmentFromWorldAndAgents(
+  snapshot: SimulationSnapshot,
+  agents: Map<string, CbbaAgent>,
+): Map<string, string> {
+  const assignment = assignmentFromAgents(agents);
+  for (const task of snapshot.world.tasks) {
+    if (task.collectedBy !== null && !assignment.has(task.id)) {
+      assignment.set(task.id, task.collectedBy);
+    }
+  }
+  return assignment;
 }

@@ -127,6 +127,8 @@ export function buildBundle(options: {
   tasks: readonly TaskState[];
   /** Current winning bids known locally (taskId → bid). Missing ⇒ 0. */
   winningBids?: ReadonlyMap<string, number>;
+  /** Current winners known locally (taskId → robotId). */
+  winningAgents?: ReadonlyMap<string, string>;
   /** Tasks this robot must not re-select. */
   exclude?: ReadonlySet<string>;
   maxBundleSize?: number;
@@ -139,6 +141,7 @@ export function buildBundle(options: {
 }): BundleBuildResult {
   const maxBundleSize = options.maxBundleSize ?? DEFAULT_MAX_BUNDLE_SIZE;
   const winningBids = options.winningBids ?? new Map<string, number>();
+  const winningAgents = options.winningAgents ?? new Map<string, string>();
   const exclude = new Set(options.exclude ?? []);
   const byId = new Map(options.tasks.map((t) => [t.id, t]));
 
@@ -181,7 +184,13 @@ export function buildBundle(options: {
         options.robot.speed,
       );
       const y = winningBids.get(task.id) ?? 0;
-      if (marginal <= y) {
+      const winner = winningAgents.get(task.id) ?? "";
+      // Strict improvement, or equal bid with a better (smaller) robot id.
+      const canWin =
+        marginal > y ||
+        (marginal === y &&
+          (winner === "" || options.robot.id.localeCompare(winner) < 0));
+      if (!canWin) {
         continue;
       }
       if (

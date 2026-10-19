@@ -12,8 +12,9 @@ describe("solveAssignment", () => {
       seed: 42,
     });
 
-    const result = solveAssignment(world);
+    const result = solveAssignment(world, { maxTasksPerRobot: 3 });
     expect(result.feasible).toBe(true);
+    expect(result.timedOut).toBe(false);
 
     const robots = [...result.assignment.values()];
     const tasks = [...result.assignment.keys()];
