@@ -1,6 +1,6 @@
 # SwarmBid
 
-**Live demo:** <DEMO_URL>
+**Live demo:** [https://swarmbid-web.vercel.app](https://swarmbid-web.vercel.app)
 
 SwarmBid is a deterministic multi-robot task-allocation simulator: robots greedily build task bundles with marginal path-score bids, then resolve conflicts with CBBA-style consensus over a lossy, delayed, optionally partitioned network, while a centralized MILP solver provides the optimal baseline for comparison.
 
