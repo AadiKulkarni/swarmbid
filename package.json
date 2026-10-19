@@ -7,8 +7,9 @@
   "scripts": {
     "test": "pnpm -r run test",
     "lint": "eslint --no-error-on-unmatched-pattern \"packages/*/src/**/*.{ts,tsx}\" \"packages/*/test/**/*.{ts,tsx}\"",
-    "build": "pnpm -r run build",
-    "dev": "pnpm --filter @swarmbid/web dev",
+    "build": "pnpm sync:wasm && pnpm -r run build",
+    "dev": "pnpm sync:wasm && pnpm --filter @swarmbid/web dev",
+    "sync:wasm": "mkdir -p packages/web/public && cp node_modules/.pnpm/highs@*/node_modules/highs/build/highs.wasm packages/web/public/highs.wasm",
     "bench": "tsx scripts/bench.ts",
     "format": "prettier --write \"**/*.{ts,tsx,js,json,md,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,json,md,yml,yaml}\""
@@ -21,6 +22,7 @@
     "@eslint/js": "^9.17.0",
     "@swarmbid/baseline": "workspace:*",
     "@swarmbid/sim": "workspace:*",
+    "@types/node": "^26.6.5",
     "@typescript-eslint/eslint-plugin": "^8.18.2",
     "@typescript-eslint/parser": "^8.18.2",
     "eslint": "^9.17.0",

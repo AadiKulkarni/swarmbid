@@ -1,30 +1,40 @@
 /**
- * SwarmBid benchmark: CBBA vs MILP across robot counts and drop rates.
+ * SwarmBid benchmark: CBBA vs exact path-score MILP (HiGHS).
  *
  * Usage: pnpm bench
+ *
+ * Worlds are keyed by (robots, seed) only — drop rate does not change the
+ * instance — so each MILP is solved once and reused across drop-rate cells.
  */
 
 import { mkdir, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
-import { scoreAssignment, solveAssignment } from "@swarmbid/baseline";
-import { createWorld, runAuction } from "@swarmbid/sim";
+import {
+  scorePaths,
+  solveAssignment,
+  type AssignmentResult,
+} from "@swarmbid/baseline";
+import { nodeLocateFile } from "../packages/baseline/src/highs-node.ts";
+import { createWorld, runAuction, type WorldConfig } from "@swarmbid/sim";
 
 const ROBOT_COUNTS = [10, 25, 50] as const;
 const DROP_RATES = [0, 0.1, 0.3] as const;
 const SEEDS = 20;
 const MAX_BUNDLE = 3;
-const MILP_TIMEOUT_MS = 3_000;
+const MILP_TIME_LIMIT_SEC = 30;
 const WORLD_SIZE = 40;
 
 interface CellStats {
   robots: number;
   tasks: number;
   dropRate: number;
-  meanPctOptimal: number | null;
+  /** Mean of (cbba/dualBound)*100 */
+  meanPct: number;
+  /** True if every seed proved optimal. */
+  allProven: boolean;
   meanRounds: number | null;
   meanMessages: number;
-  milpTimedOut: boolean;
   convergedFraction: number;
 }
 
@@ -35,13 +45,6 @@ function mean(values: number[]): number {
   return values.reduce((a, b) => a + b, 0) / values.length;
 }
 
-function formatPct(value: number | null): string {
-  if (value === null) {
-    return "timeout";
-  }
-  return `${value.toFixed(1)}%`;
-}
-
 function formatNum(value: number | null, digits = 1): string {
   if (value === null) {
     return "—";
@@ -49,26 +52,36 @@ function formatNum(value: number | null, digits = 1): string {
   return value.toFixed(digits);
 }
 
-async function runCell(robots: number, dropRate: number): Promise<CellStats> {
+function worldConfig(robots: number, seed: number): WorldConfig {
+  return {
+    width: WORLD_SIZE,
+    height: WORLD_SIZE,
+    robotCount: robots,
+    taskCount: robots * 2,
+    seed,
+  };
+}
+
+async function runCell(
+  robots: number,
+  dropRate: number,
+  milpBySeed: AssignmentResult[],
+): Promise<CellStats> {
   const tasks = robots * 2;
   const pcts: number[] = [];
   const rounds: number[] = [];
   const messages: number[] = [];
-  let milpTimedOut = false;
+  let allProven = true;
   let converged = 0;
 
   for (let s = 0; s < SEEDS; s++) {
-    const seed = robots * 10_000 + Math.round(dropRate * 1000) * 100 + s;
-    const worldConfig = {
-      width: WORLD_SIZE,
-      height: WORLD_SIZE,
-      robotCount: robots,
-      taskCount: tasks,
-      seed,
-    };
+    const seed = robots * 10_000 + s;
+    const config = worldConfig(robots, seed);
+
+    process.stderr.write(`  seed ${s + 1}/${SEEDS}\r`);
 
     const auction = runAuction({
-      world: worldConfig,
+      world: config,
       network: {
         dropRate,
         minDelay: 0,
@@ -87,31 +100,48 @@ async function runCell(robots: number, dropRate: number): Promise<CellStats> {
       rounds.push(auction.roundsToConverge);
     }
 
-    const world = createWorld(worldConfig);
-    const milp = solveAssignment(world, {
-      maxTasksPerRobot: MAX_BUNDLE,
-      timeoutMs: MILP_TIMEOUT_MS,
-      maxVariables: 1_200,
-    });
-
-    if (milp.timedOut) {
-      milpTimedOut = true;
-    } else if (milp.feasible && milp.objective > 0) {
-      const auctionScore = scoreAssignment(world, auction.assignment);
-      pcts.push((auctionScore / milp.objective) * 100);
+    const world = createWorld(config);
+    const milp = milpBySeed[s]!;
+    const cbbaScore = scorePaths(world, auction.paths);
+    const bound = milp.dualBound > 0 ? milp.dualBound : milp.objective;
+    if (bound > 0) {
+      pcts.push((cbbaScore / bound) * 100);
+    }
+    if (!milp.provenOptimal) {
+      allProven = false;
     }
   }
+
+  process.stderr.write("\n");
 
   return {
     robots,
     tasks,
     dropRate,
-    meanPctOptimal: milpTimedOut || pcts.length === 0 ? null : mean(pcts),
+    meanPct: mean(pcts),
+    allProven,
     meanRounds: rounds.length === 0 ? null : mean(rounds),
     meanMessages: mean(messages),
-    milpTimedOut,
     convergedFraction: converged / SEEDS,
   };
+}
+
+async function solveMilpBank(robots: number): Promise<AssignmentResult[]> {
+  const results: AssignmentResult[] = [];
+  process.stderr.write(`MILP bank robots=${robots}...\n`);
+  for (let s = 0; s < SEEDS; s++) {
+    process.stderr.write(`  milp ${s + 1}/${SEEDS}\r`);
+    const world = createWorld(worldConfig(robots, robots * 10_000 + s));
+    results.push(
+      await solveAssignment(world, {
+        maxTasksPerRobot: MAX_BUNDLE,
+        timeLimitSec: MILP_TIME_LIMIT_SEC,
+        locateFile: nodeLocateFile,
+      }),
+    );
+  }
+  process.stderr.write("\n");
+  return results;
 }
 
 function renderMarkdown(cells: CellStats[]): string {
@@ -119,17 +149,22 @@ function renderMarkdown(cells: CellStats[]): string {
     "# SwarmBid benchmark results",
     "",
     `Settings: tasks = 2× robots, bundle size ${MAX_BUNDLE}, ${SEEDS} seeds per cell,`,
-    `drop rates {${DROP_RATES.join(", ")}}, MILP timeout ${MILP_TIMEOUT_MS}ms`,
-    `(models with robots×tasks > 1200 are marked timeout without solving).`,
+    `drop rates {${DROP_RATES.join(", ")}}, HiGHS time limit ${MILP_TIME_LIMIT_SEC}s.`,
+    "MILP maximizes the same path-score objective as CBBA (set-packing / arc model).",
+    "Auction runs are plan-only (no movement/collection) so paths match the static MILP.",
+    "When the solver hits the time limit, “% of optimal” is reported against the MIP",
+    "dual bound (tightened by an analytical upper bound) as `≥X%`.",
     "",
     "| Robots | Tasks | Drop rate | Mean % of MILP optimal | Mean rounds to converge | Mean messages sent |",
     "|-------:|------:|----------:|-----------------------:|------------------------:|-------------------:|",
   ];
 
   for (const cell of cells) {
-    const pct = cell.milpTimedOut ? "timeout" : formatPct(cell.meanPctOptimal);
+    const pctLabel = cell.allProven
+      ? `${cell.meanPct.toFixed(1)}%`
+      : `≥${cell.meanPct.toFixed(1)}%`;
     lines.push(
-      `| ${cell.robots} | ${cell.tasks} | ${cell.dropRate} | ${pct} | ${formatNum(cell.meanRounds)} | ${formatNum(cell.meanMessages, 0)} |`,
+      `| ${cell.robots} | ${cell.tasks} | ${cell.dropRate} | ${pctLabel} | ${formatNum(cell.meanRounds)} | ${formatNum(cell.meanMessages, 0)} |`,
     );
   }
 
@@ -137,10 +172,10 @@ function renderMarkdown(cells: CellStats[]): string {
     "",
     "## Notes",
     "",
-    "- % of MILP optimal compares the CBBA assignment score (sum of reward − Manhattan)",
-    "  to the centralized MILP objective with the same per-robot capacity.",
-    "- Rounds to converge = ticks until the assignment stayed stable for 3 ticks.",
-    "- Cells marked `timeout` skipped or overran the MILP budget; auction metrics still run.",
+    "- Objective: maximize Σ_robots pathScore(start, ordered path), |path| ≤ 3, tasks disjoint.",
+    "- pathScore = Σ_j (reward_j − cumulative Manhattan travel time / speed).",
+    "- CBBA % uses each robot's ordered path at convergence vs the MILP dual bound.",
+    "- `≥X%` means at least one seed hit the HiGHS time limit; X is mean(cbba/dualBound).",
     "",
   );
 
@@ -150,9 +185,10 @@ function renderMarkdown(cells: CellStats[]): string {
 async function main(): Promise<void> {
   const cells: CellStats[] = [];
   for (const robots of ROBOT_COUNTS) {
+    const milpBySeed = await solveMilpBank(robots);
     for (const dropRate of DROP_RATES) {
       process.stderr.write(`bench robots=${robots} drop=${dropRate}...\n`);
-      cells.push(await runCell(robots, dropRate));
+      cells.push(await runCell(robots, dropRate, milpBySeed));
     }
   }
 

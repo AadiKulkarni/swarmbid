@@ -1,24 +1,27 @@
 # SwarmBid benchmark results
 
 Settings: tasks = 2× robots, bundle size 3, 20 seeds per cell,
-drop rates {0, 0.1, 0.3}, MILP timeout 3000ms
-(models with robots×tasks > 1200 are marked timeout without solving).
+drop rates {0, 0.1, 0.3}, HiGHS time limit 30s.
+MILP maximizes the same path-score objective as CBBA (set-packing / arc model).
+Auction runs are plan-only (no movement/collection) so paths match the static MILP.
+When the solver hits the time limit, “% of optimal” is reported against the MIP
+dual bound (tightened by an analytical upper bound) as `≥X%`.
 
 | Robots | Tasks | Drop rate | Mean % of MILP optimal | Mean rounds to converge | Mean messages sent |
 |-------:|------:|----------:|-----------------------:|------------------------:|-------------------:|
-| 10 | 20 | 0 | 99.5% | 10.1 | 131 |
-| 10 | 20 | 0.1 | 99.6% | 13.2 | 162 |
-| 10 | 20 | 0.3 | 99.4% | 14.6 | 176 |
-| 25 | 50 | 0 | timeout | 16.3 | 483 |
-| 25 | 50 | 0.1 | timeout | 19.6 | 565 |
-| 25 | 50 | 0.3 | timeout | 20.1 | 578 |
-| 50 | 100 | 0 | timeout | 17.6 | 1030 |
-| 50 | 100 | 0.1 | timeout | 18.8 | 1088 |
-| 50 | 100 | 0.3 | timeout | 19.8 | 1140 |
+| 10 | 20 | 0 | 84.9% | 7.0 | 101 |
+| 10 | 20 | 0.1 | 85.0% | 9.3 | 123 |
+| 10 | 20 | 0.3 | 85.0% | 11.7 | 147 |
+| 25 | 50 | 0 | ≥85.6% | 9.4 | 444 |
+| 25 | 50 | 0.1 | ≥85.6% | 12.9 | 529 |
+| 25 | 50 | 0.3 | ≥85.6% | 15.4 | 715 |
+| 50 | 100 | 0 | ≥88.3% | 12.3 | 1488 |
+| 50 | 100 | 0.1 | ≥88.2% | 16.4 | 2025 |
+| 50 | 100 | 0.3 | ≥88.2% | 19.9 | 1833 |
 
 ## Notes
 
-- % of MILP optimal compares the CBBA assignment score (sum of reward − Manhattan)
-  to the centralized MILP objective with the same per-robot capacity.
-- Rounds to converge = ticks until the assignment stayed stable for 3 ticks.
-- Cells marked `timeout` skipped or overran the MILP budget; auction metrics still run.
+- Objective: maximize Σ_robots pathScore(start, ordered path), |path| ≤ 3, tasks disjoint.
+- pathScore = Σ_j (reward_j − cumulative Manhattan travel time / speed).
+- CBBA % uses each robot's ordered path at convergence vs the MILP dual bound.
+- `≥X%` means at least one seed hit the HiGHS time limit; X is mean(cbba/dualBound).

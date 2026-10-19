@@ -1,140 +1,257 @@
 /**
- * Centralized MILP task assignment baseline.
+ * Exact centralized optimum for the CBBA path-score objective.
  *
- * Formulates the robot–task assignment as a binary integer program:
- * maximize sum_i sum_j u_ij * x_ij subject to each task chosen at most once
- * and each robot chosen at most `maxTasksPerRobot` times (default 3, matching
- * CBBA L_t). Utility u_ij = task.reward − Manhattan distance (floored at 0).
+ * Preferred model: set-packing MILP with columns = (robot, ordered path),
+ * score = pathScore (identical to CBBA). When columns are too numerous, an
+ * equivalent compact slot/arc MILP is used.
+ *
+ * Solved with HiGHS (WASM). On time limit we keep the incumbent and a dual
+ * bound tightened by the analytical pathScoreUpperBound.
  */
 
 import type { WorldState } from "@swarmbid/sim";
-import { manhattan } from "@swarmbid/sim";
-import solver from "javascript-lp-solver";
+import { assignmentFromArcColumns, buildArcLp } from "./arc.js";
+import {
+  columnsToLp,
+  enumerateColumns,
+  estimateSubsetColumns,
+  SUBSET_COLUMN_HARD_LIMIT,
+  type Column,
+} from "./columns.js";
+import { greedyPaths } from "./greedy.js";
+import { loadHighs } from "./highs.js";
+import { pathScoreUpperBound } from "./score.js";
 
 export interface SolveOptions {
-  /** Max tasks assigned to one robot (CBBA bundle capacity). Default 3. */
+  /** Max path length L_t (CBBA bundle capacity). Default 3. */
   maxTasksPerRobot?: number;
-  /**
-   * Wall-clock budget in ms. Because javascript-lp-solver is synchronous,
-   * oversized models are rejected up front; if a solve still overruns the
-   * budget the result is marked timedOut.
-   */
-  timeoutMs?: number;
-  /** Skip the solver when (#robots × #tasks) exceeds this. Default 1500. */
-  maxVariables?: number;
+  /** HiGHS wall-clock limit in seconds. Default 30. */
+  timeLimitSec?: number;
+  /** Override wasm locator (Node / Vite worker). */
+  locateFile?: (file: string) => string;
 }
 
 export interface AssignmentResult {
-  /** taskId -> robotId */
+  /** taskId → robotId */
   assignment: Map<string, string>;
-  /** Optimal objective value (sum of utilities). */
+  /** Best feasible objective (path-score sum). */
   objective: number;
+  /** Upper bound on the optimum (MIP dual ∩ analytical UB). */
+  dualBound: number;
   feasible: boolean;
+  /** True when HiGHS stopped on the time limit. */
   timedOut: boolean;
+  /** True when status is Optimal. */
+  provenOptimal: boolean;
+  model: "columns" | "arc";
 }
 
-function utility(reward: number, distance: number): number {
-  return Math.max(0, reward - distance);
-}
+export { bestPathScore, scoreAssignment, scorePaths, pathScoreUpperBound } from "./score.js";
 
-/**
- * Score an assignment with the same utility the MILP optimizes.
- */
-export function scoreAssignment(
-  world: WorldState,
-  assignment: Map<string, string>,
-): number {
-  let total = 0;
-  const robots = new Map(world.robots.map((r) => [r.id, r]));
-  const tasks = new Map(world.tasks.map((t) => [t.id, t]));
-  for (const [taskId, robotId] of assignment) {
-    const task = tasks.get(taskId);
-    const robot = robots.get(robotId);
-    if (!task || !robot) {
+/** HiGHS model status codes used here. */
+const STATUS_OPTIMAL = 7;
+const STATUS_TIME_LIMIT = 13;
+
+function assignmentFromColumns(
+  columns: Column[],
+  nameToValue: Map<string, number>,
+): Map<string, string> {
+  const assignment = new Map<string, string>();
+  for (const col of columns) {
+    if ((nameToValue.get(col.id) ?? 0) < 0.5) {
       continue;
     }
-    total += utility(task.reward, manhattan(robot.position, task.position));
+    for (const taskId of col.taskIds) {
+      assignment.set(taskId, col.robotId);
+    }
   }
-  return total;
+  return assignment;
+}
+
+function readColumnValues(model: {
+  getDimensions: () => { numCols: number };
+  getColName: (i: number) => string;
+  getSolution: () => { colValue: Float64Array };
+}): Map<string, number> {
+  const { numCols } = model.getDimensions();
+  const { colValue } = model.getSolution();
+  const map = new Map<string, number>();
+  for (let i = 0; i < numCols; i++) {
+    map.set(model.getColName(i), colValue[i] ?? 0);
+  }
+  return map;
+}
+
+function warmStartFromGreedy(
+  model: {
+    getDimensions: () => { numCols: number };
+    getColName: (i: number) => string;
+    setSolution: (s: { colValue: Float64Array }) => unknown;
+  },
+  kind: "columns" | "arc",
+  columns: Column[] | null,
+  greedy: ReturnType<typeof greedyPaths>,
+): void {
+  const { numCols } = model.getDimensions();
+  const colValue = new Float64Array(numCols);
+  const want = new Set<string>();
+
+  if (kind === "arc") {
+    for (const [robotId, taskIds] of greedy.paths) {
+      taskIds.forEach((taskId, i) => {
+        want.add(`x_${robotId}_${taskId}_${i + 1}`);
+      });
+    }
+  } else if (columns) {
+    for (const col of columns) {
+      const path = greedy.paths.get(col.robotId);
+      if (!path || path.length !== col.taskIds.length) {
+        continue;
+      }
+      if (path.every((id, i) => id === col.taskIds[i])) {
+        want.add(col.id);
+      }
+    }
+  }
+
+  for (let i = 0; i < numCols; i++) {
+    if (want.has(model.getColName(i))) {
+      colValue[i] = 1;
+    }
+  }
+  model.setSolution({ colValue });
+}
+
+function finiteOr(value: number, fallback: number): number {
+  return Number.isFinite(value) ? value : fallback;
 }
 
 /**
- * Solve the optimal centralized assignment for the given world snapshot.
+ * Solve the exact path-score assignment MILP with HiGHS.
  */
-export function solveAssignment(
+export async function solveAssignment(
   world: WorldState,
   options: SolveOptions = {},
-): AssignmentResult {
+): Promise<AssignmentResult> {
   const maxTasksPerRobot = options.maxTasksPerRobot ?? 3;
-  const timeoutMs = options.timeoutMs ?? 5_000;
-  const maxVariables = options.maxVariables ?? 1_500;
+  const timeLimitSec = options.timeLimitSec ?? 30;
 
   const robots = world.robots;
   const tasks = world.tasks.filter((t) => t.collectedBy === null);
 
   if (robots.length === 0 || tasks.length === 0) {
-    return { assignment: new Map(), objective: 0, feasible: true, timedOut: false };
+    return {
+      assignment: new Map(),
+      objective: 0,
+      dualBound: 0,
+      feasible: true,
+      timedOut: false,
+      provenOptimal: true,
+      model: "columns",
+    };
   }
 
-  if (robots.length * tasks.length > maxVariables) {
-    return { assignment: new Map(), objective: 0, feasible: false, timedOut: true };
-  }
+  const greedy = greedyPaths(world, maxTasksPerRobot);
+  const analyticalUb = pathScoreUpperBound(world);
+  const highs = await loadHighs(options.locateFile);
+  let columns: Column[] | null = null;
+  let modelKind: "columns" | "arc" = "columns";
+  let lp: string;
 
-  const started = Date.now();
-
-  const variables: Record<string, Record<string, number>> = {};
-  const ints: Record<string, number> = {};
-  const constraints: Record<string, { max?: number; min?: number }> = {};
-
-  for (const robot of robots) {
-    constraints[`robot_${robot.id}`] = { max: maxTasksPerRobot };
-  }
-  for (const task of tasks) {
-    constraints[`task_${task.id}`] = { max: 1 };
-  }
-
-  for (const robot of robots) {
-    for (const task of tasks) {
-      const key = `x_${robot.id}_${task.id}`;
-      const u = utility(task.reward, manhattan(robot.position, task.position));
-      variables[key] = {
-        profit: u,
-        [`robot_${robot.id}`]: 1,
-        [`task_${task.id}`]: 1,
-      };
-      ints[key] = 1;
+  if (
+    estimateSubsetColumns(robots.length, tasks.length, maxTasksPerRobot) <=
+    SUBSET_COLUMN_HARD_LIMIT
+  ) {
+    const enumerated = enumerateColumns(world, maxTasksPerRobot);
+    if (enumerated) {
+      columns = enumerated.columns;
+      lp = columnsToLp(
+        columns,
+        tasks.map((t) => t.id),
+        robots.map((r) => r.id),
+      );
+    } else {
+      modelKind = "arc";
+      lp = buildArcLp(world, maxTasksPerRobot);
     }
+  } else {
+    modelKind = "arc";
+    lp = buildArcLp(world, maxTasksPerRobot);
   }
 
-  const result = solver.Solve({
-    optimize: "profit",
-    opType: "max",
-    constraints,
-    variables,
-    ints,
-  });
+  const model = highs.createModel({ format: "lp", data: lp });
+  try {
+    warmStartFromGreedy(model, modelKind, columns, greedy);
+    model.options.set("time_limit", timeLimitSec);
+    model.options.set("output_flag", false);
+    model.run();
 
-  if (Date.now() - started > timeoutMs) {
-    return { assignment: new Map(), objective: 0, feasible: false, timedOut: true };
-  }
+    const status = model.getModelStatus();
+    const rawObj = Number(model.getObjectiveValue());
+    const rawDual = Number(model.info.get("mip_dual_bound"));
+    const timedOut = status === STATUS_TIME_LIMIT;
+    const provenOptimal = status === STATUS_OPTIMAL;
 
-  const assignment = new Map<string, string>();
-  if (result.feasible) {
-    for (const robot of robots) {
-      for (const task of tasks) {
-        const key = `x_${robot.id}_${task.id}`;
-        const value = result[key];
-        if (typeof value === "number" && value >= 0.5) {
-          assignment.set(task.id, robot.id);
-        }
+    // Prefer solver incumbent; fall back to greedy if HiGHS reports non-finite.
+    let objective = finiteOr(rawObj, greedy.score);
+    if (!Number.isFinite(rawObj) || (timedOut && objective < greedy.score - 1e-9)) {
+      objective = Math.max(finiteOr(rawObj, 0), greedy.score);
+    }
+
+    // Dual bound: MIP dual ∩ analytical UB, never below incumbent.
+    let dualBound: number;
+    if (provenOptimal) {
+      dualBound = objective;
+    } else {
+      dualBound = finiteOr(rawDual, analyticalUb);
+      dualBound = Math.min(dualBound, analyticalUb);
+      dualBound = Math.max(dualBound, objective);
+    }
+
+    const feasible = Number.isFinite(objective);
+
+    let assignment: Map<string, string>;
+    if (feasible && Number.isFinite(rawObj) && rawObj + 1e-6 >= greedy.score) {
+      const values = readColumnValues(model);
+      assignment =
+        modelKind === "columns" && columns
+          ? assignmentFromColumns(columns, values)
+          : assignmentFromArcColumns(
+              Object.fromEntries([...values].map(([k, v]) => [k, { Primal: v }])),
+            );
+      // If extraction looks empty but objective is positive, trust greedy.
+      if (assignment.size === 0 && objective > 1e-9) {
+        assignment = greedy.assignment;
       }
+    } else {
+      assignment = greedy.assignment;
+      objective = Math.max(objective, greedy.score);
+      dualBound = Math.max(dualBound, objective);
     }
-  }
 
-  return {
-    assignment,
-    objective: typeof result.result === "number" ? result.result : 0,
-    feasible: Boolean(result.feasible),
-    timedOut: false,
-  };
+    return {
+      assignment,
+      objective,
+      dualBound,
+      feasible,
+      timedOut,
+      provenOptimal,
+      model: modelKind,
+    };
+  } finally {
+    model.dispose();
+  }
+}
+
+/** Format a CBBA/MILP ratio for tables. */
+export function formatPctOfBound(
+  score: number,
+  dualBound: number,
+  provenOptimal: boolean,
+): string {
+  if (dualBound <= 0) {
+    return "—";
+  }
+  const pct = (score / dualBound) * 100;
+  return provenOptimal ? `${pct.toFixed(1)}%` : `≥${pct.toFixed(1)}%`;
 }

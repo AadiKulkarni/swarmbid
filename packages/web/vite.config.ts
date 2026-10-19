@@ -9,7 +9,8 @@ export default defineConfig({
   worker: {
     format: "es",
   },
+  assetsInclude: ["**/*.wasm"],
   optimizeDeps: {
-    include: ["javascript-lp-solver"],
+    exclude: ["highs"],
   },
 });

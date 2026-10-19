@@ -4,7 +4,7 @@
 
 import { countDoubleAssigned, countUnassigned, totalRewardCollected } from "../metrics.js";
 import { Simulation, type SimulationOptions, type SimulationSnapshot } from "../simulation.js";
-import type { NetworkConfig, WorldConfig } from "../types.js";
+import type { NetworkConfig, RobotController, WorldConfig } from "../types.js";
 import { createWorld } from "../world.js";
 import {
   assignmentFromAgents,
@@ -29,6 +29,8 @@ export interface AuctionRunResult {
   agents: Map<string, CbbaAgent>;
   /** Assignment at the moment of convergence (before collection clears bundles). */
   assignment: Map<string, string>;
+  /** Ordered paths at convergence (robotId → task ids). */
+  paths: Map<string, string[]>;
   converged: boolean;
   roundsToConverge: number | null;
 }
@@ -112,10 +114,20 @@ export function createAuctionSimulation(options: AuctionRunOptions): {
     maxBundleSize: options.maxBundleSize ?? DEFAULT_MAX_BUNDLE_SIZE,
     origins,
   });
+  // Auction evaluation is plan-only: consensus without movement/collection so
+  // scored paths stay complete and comparable to the static MILP assignment.
+  const moving = controllersFromAgents(agents);
+  const controllers = new Map<string, RobotController>();
+  for (const [id, ctrl] of moving) {
+    controllers.set(id, (input) => {
+      const action = ctrl(input);
+      return { moves: [], outgoingMessages: action.outgoingMessages };
+    });
+  }
   const simOptions: SimulationOptions = {
     world: options.world,
     network: options.network,
-    controllers: controllersFromAgents(agents),
+    controllers,
   };
   return { sim: new Simulation(simOptions), agents };
 }
@@ -132,7 +144,16 @@ export function runAuction(options: AuctionRunOptions): AuctionRunResult {
   let stableCount = 0;
   let roundsToConverge: number | null = null;
   let assignmentAtConvergence: Map<string, string> | null = null;
+  let pathsAtConvergence: Map<string, string[]> | null = null;
   let snapshot = syncAssignmentsToWorld(sim.getState(), agents);
+
+  const capturePaths = () => {
+    const paths = new Map<string, string[]>();
+    for (const agent of agents.values()) {
+      paths.set(agent.robotId, agent.getPath());
+    }
+    return paths;
+  };
 
   for (let t = 0; t < maxTicks; t++) {
     snapshot = syncAssignmentsToWorld(sim.step(), agents);
@@ -148,6 +169,7 @@ export function runAuction(options: AuctionRunOptions): AuctionRunResult {
       if (stableCount >= stableTicks && roundsToConverge === null) {
         roundsToConverge = snapshot.world.tick - stableTicks;
         assignmentAtConvergence = new Map(assignment);
+        pathsAtConvergence = capturePaths();
         break;
       }
     } else {
@@ -160,6 +182,7 @@ export function runAuction(options: AuctionRunOptions): AuctionRunResult {
     snapshot,
     agents,
     assignment: assignmentAtConvergence ?? assignmentFromWorldAndAgents(snapshot, agents),
+    paths: pathsAtConvergence ?? capturePaths(),
     converged: roundsToConverge !== null,
     roundsToConverge,
   };

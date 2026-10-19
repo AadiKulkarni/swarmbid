@@ -6,17 +6,17 @@ SwarmBid is a deterministic multi-robot task-allocation simulator: robots greedi
 
 ## Results
 
-From `docs/benchmark-results.md` (20 seeds per cell, bundle size 3, tasks = 2× robots):
+From `docs/benchmark-results.md` (20 seeds per cell, bundle size 3, tasks = 2× robots, HiGHS 30s):
 
 | Robots | Drop rate | Mean % of MILP optimal | Mean rounds to converge | Mean messages |
 |-------:|----------:|-----------------------:|------------------------:|--------------:|
-| 10 | 0 | 99.5% | 10.1 | 131 |
-| 10 | 0.1 | 99.6% | 13.2 | 162 |
-| 10 | 0.3 | 99.4% | 14.6 | 176 |
-| 25 | 0 / 0.1 / 0.3 | timeout | 16.3 / 19.6 / 20.1 | 483 / 565 / 578 |
-| 50 | 0 / 0.1 / 0.3 | timeout | 17.6 / 18.8 / 19.8 | 1030 / 1088 / 1140 |
+| 10 | 0 | 84.9% | 7.0 | 101 |
+| 10 | 0.1 | 85.0% | 9.3 | 123 |
+| 10 | 0.3 | 85.0% | 11.7 | 147 |
+| 25 | 0 / 0.1 / 0.3 | ≥85.6% / ≥85.6% / ≥85.6% | 9.4 / 12.9 / 15.4 | 444 / 529 / 715 |
+| 50 | 0 / 0.1 / 0.3 | ≥88.3% / ≥88.2% / ≥88.2% | 12.3 / 16.4 / 19.9 | 1488 / 2025 / 1833 |
 
-At 10 robots, CBBA stays within about 1% of the MILP objective even at 30% message drop. Larger fleets still converge in ~20 rounds; MILP is marked `timeout` once robots×tasks exceeds the solver budget.
+At 10 robots, HiGHS proves the path-score optimum; CBBA lands around 85% even with message drop. Larger fleets hit the 30s limit, so cells report `≥X%` against the dual/analytical bound (no `timeout` blanks).
 
 ## How to run
 
@@ -46,13 +46,12 @@ Each robot scores a candidate task as the marginal gain in path score from inser
 | Package | Role |
 |---------|------|
 | `@swarmbid/sim` | Seeded PRNG, grid world, message bus, CBBA auction, metrics |
-| `@swarmbid/baseline` | Centralized MILP assignment (`javascript-lp-solver`) |
+| `@swarmbid/baseline` | Exact path-score MILP via HiGHS (WASM): set-packing columns or compact slot model |
 | `@swarmbid/web` | Vite + React canvas UI with live metrics and MILP % |
 
 ## Known limitations
 
 - Path scores used for bidding are frozen at each robot’s initial position; movement does not reprice open auctions mid-run.
-- The MILP baseline uses pairwise (reward − distance) utilities, not the full path-coupled CBBA score, so “% of optimal” is an approximate efficiency ratio.
-- Large instances (roughly robots×tasks > 1200) skip or time out the MILP; those benchmark cells are marked `timeout`.
+- Large fleets (25+) switch from set-packing columns to the compact slot MILP; HiGHS may hit the 30s limit, so those cells report `≥X%` against the MIP/analytical dual bound rather than a proven optimum.
 - Permanent network partitions prevent global consensus by design; the property tests assume a connected (non-partitioned) graph.
 - Bundle construction is greedy CBBA, not an exhaustive combinatorial auction, so solution quality is not guaranteed optimal even with perfect communication.

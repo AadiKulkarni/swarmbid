@@ -2,12 +2,11 @@
  * Owns Simulation lifecycle, play/pause/step/replay, and live auction metrics.
  */
 
-import { scoreAssignment } from "@swarmbid/baseline";
+import { scorePaths } from "@swarmbid/baseline";
 import {
   createAuctionSimulation,
   syncAssignmentsToWorld,
   type CbbaAgent,
-  type Metrics,
   type NetworkConfig,
   type Simulation,
   type SimulationSnapshot,
@@ -29,9 +28,12 @@ export interface SimView {
   snapshot: SimulationSnapshot;
   agents: Map<string, CbbaAgent>;
   milpObjective: number | null;
+  milpDualBound: number | null;
+  milpProvenOptimal: boolean;
   milpLoading: boolean;
   milpTimedOut: boolean;
   percentOfOptimal: number | null;
+  percentLabel: string;
   auctionScore: number;
   playing: boolean;
   setPlaying: (v: boolean) => void;
@@ -81,11 +83,19 @@ function createAuction(controls: SimControls): {
   });
 }
 
-function percentOfOptimal(auctionScore: number, milpObjective: number | null): number | null {
-  if (milpObjective === null || milpObjective <= 0) {
-    return null;
+function percentAgainstBound(
+  auctionScore: number,
+  dualBound: number | null,
+  provenOptimal: boolean,
+): { pct: number | null; label: string } {
+  if (dualBound === null || dualBound <= 0) {
+    return { pct: null, label: "—" };
   }
-  return (auctionScore / milpObjective) * 100;
+  const pct = (auctionScore / dualBound) * 100;
+  return {
+    pct,
+    label: provenOptimal ? `${pct.toFixed(1)}%` : `≥${pct.toFixed(1)}%`,
+  };
 }
 
 export function useSimulation(controls: SimControls): SimView {
@@ -119,14 +129,12 @@ export function useSimulation(controls: SimControls): SimView {
   const milp = useMilpWorker(snapshot.world, 3);
 
   const auctionScore = useMemo(() => {
-    const assignment = new Map<string, string>();
-    for (const robot of snapshot.world.robots) {
-      for (const taskId of robot.assignedTaskIds) {
-        assignment.set(taskId, robot.id);
-      }
+    const paths = new Map<string, string[]>();
+    for (const agent of agents.values()) {
+      paths.set(agent.robotId, agent.getPath());
     }
-    return scoreAssignment(snapshot.world, assignment);
-  }, [snapshot.world]);
+    return scorePaths(snapshot.world, paths);
+  }, [snapshot.world, agents]);
 
   const reset = useCallback(() => {
     const parsed = JSON.parse(controlsKey) as SimControls;
@@ -165,15 +173,22 @@ export function useSimulation(controls: SimControls): SimView {
     return () => window.clearInterval(id);
   }, [playing, step]);
 
-  void (null as Metrics | null);
+  const pct = percentAgainstBound(
+    auctionScore,
+    milp.dualBound,
+    milp.provenOptimal,
+  );
 
   return {
     snapshot,
     agents,
     milpObjective: milp.objective,
+    milpDualBound: milp.dualBound,
+    milpProvenOptimal: milp.provenOptimal,
     milpLoading: milp.loading,
     milpTimedOut: milp.timedOut,
-    percentOfOptimal: percentOfOptimal(auctionScore, milp.objective),
+    percentOfOptimal: pct.pct,
+    percentLabel: pct.label,
     auctionScore,
     playing,
     setPlaying,

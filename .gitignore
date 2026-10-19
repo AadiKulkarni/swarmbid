@@ -9,6 +9,7 @@ build/
 
 # Vite
 packages/web/dist/
+packages/web/public/highs.wasm
 
 # Test / coverage
 coverage/

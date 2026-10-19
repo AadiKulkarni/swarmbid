@@ -1,5 +1,5 @@
 /**
- * Runs solveAssignment in a web worker; recomputes once per world seed/layout.
+ * Runs solveAssignment in a web worker; recomputes once per world layout.
  */
 
 import type { WorldState } from "@swarmbid/sim";
@@ -8,6 +8,8 @@ import type { MilpRequest, MilpResponse } from "../workers/milp.worker";
 
 export interface MilpStatus {
   objective: number | null;
+  dualBound: number | null;
+  provenOptimal: boolean;
   timedOut: boolean;
   loading: boolean;
 }
@@ -25,6 +27,8 @@ function worldKey(world: WorldState): string {
 export function useMilpWorker(world: WorldState, maxTasksPerRobot = 3): MilpStatus {
   const [status, setStatus] = useState<MilpStatus>({
     objective: null,
+    dualBound: null,
+    provenOptimal: false,
     timedOut: false,
     loading: true,
   });
@@ -56,7 +60,9 @@ export function useMilpWorker(world: WorldState, maxTasksPerRobot = 3): MilpStat
         return;
       }
       setStatus({
-        objective: event.data.timedOut ? null : event.data.objective,
+        objective: event.data.feasible ? event.data.objective : null,
+        dualBound: event.data.dualBound,
+        provenOptimal: event.data.provenOptimal,
         timedOut: event.data.timedOut,
         loading: false,
       });

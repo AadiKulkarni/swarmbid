@@ -42,9 +42,11 @@ export function App() {
       <MetricsPanel
         metrics={sim.snapshot.metrics}
         milpObjective={sim.milpObjective}
+        milpDualBound={sim.milpDualBound}
+        milpProvenOptimal={sim.milpProvenOptimal}
         milpLoading={sim.milpLoading}
         milpTimedOut={sim.milpTimedOut}
-        percentOfOptimal={sim.percentOfOptimal}
+        percentLabel={sim.percentLabel}
         auctionScore={sim.auctionScore}
         tick={sim.snapshot.world.tick}
       />

@@ -1,10 +1,19 @@
 /**
- * @swarmbid/baseline — centralized MILP optimal assignment.
- *
- * Given the same WorldState as the decentralized auction, returns the
- * optimal robot–task matching and objective value for "% of MILP optimal"
- * comparisons in the UI and metrics.
+ * @swarmbid/baseline — exact centralized optimum for CBBA path scores (HiGHS).
  */
 
-export { scoreAssignment, solveAssignment } from "./assign.js";
+export {
+  formatPctOfBound,
+  solveAssignment,
+} from "./assign.js";
 export type { AssignmentResult, SolveOptions } from "./assign.js";
+export { bruteForceOptimal } from "./brute.js";
+export type { BruteResult } from "./brute.js";
+export { loadHighs, resetHighsLoader } from "./highs.js";
+export { greedyPaths } from "./greedy.js";
+export {
+  bestPathScore,
+  pathScoreUpperBound,
+  scoreAssignment,
+  scorePaths,
+} from "./score.js";

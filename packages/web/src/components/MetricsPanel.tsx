@@ -3,9 +3,11 @@ import type { Metrics } from "@swarmbid/sim";
 interface Props {
   metrics: Metrics;
   milpObjective: number | null;
+  milpDualBound: number | null;
+  milpProvenOptimal: boolean;
   milpLoading: boolean;
   milpTimedOut: boolean;
-  percentOfOptimal: number | null;
+  percentLabel: string;
   auctionScore: number;
   tick: number;
 }
@@ -13,19 +15,21 @@ interface Props {
 export function MetricsPanel({
   metrics,
   milpObjective,
+  milpDualBound,
+  milpProvenOptimal,
   milpLoading,
   milpTimedOut,
-  percentOfOptimal,
+  percentLabel,
   auctionScore,
   tick,
 }: Props) {
   let milpLabel = "—";
   if (milpLoading) {
     milpLabel = "solving…";
-  } else if (milpTimedOut) {
-    milpLabel = "timeout";
   } else if (milpObjective !== null) {
-    milpLabel = milpObjective.toFixed(1);
+    milpLabel = milpProvenOptimal
+      ? milpObjective.toFixed(1)
+      : `${milpObjective.toFixed(1)} (bound ${(milpDualBound ?? milpObjective).toFixed(1)}${milpTimedOut ? ", capped" : ""})`;
   }
 
   return (
@@ -65,9 +69,7 @@ export function MetricsPanel({
       </div>
       <div className="metric highlight">
         <span>% of MILP optimal</span>
-        <strong>
-          {percentOfOptimal === null ? "—" : `${percentOfOptimal.toFixed(1)}%`}
-        </strong>
+        <strong>{percentLabel}</strong>
       </div>
     </aside>
   );
