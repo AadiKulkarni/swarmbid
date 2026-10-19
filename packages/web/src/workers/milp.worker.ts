@@ -18,9 +18,18 @@ export interface MilpResponse {
   timedOut: boolean;
   provenOptimal: boolean;
   feasible: boolean;
+  error?: string;
 }
 
 resetHighsLoader();
+
+/** Prefer the Vite-copied /highs.wasm from public/; fall back to same-origin. */
+function locateFile(file: string): string {
+  if (file.endsWith(".wasm")) {
+    return new URL("/highs.wasm", self.location.origin).href;
+  }
+  return file;
+}
 
 self.onmessage = (event: MessageEvent<MilpRequest>) => {
   const { id, world, maxTasksPerRobot } = event.data;
@@ -29,9 +38,7 @@ self.onmessage = (event: MessageEvent<MilpRequest>) => {
       const result = await solveAssignment(world, {
         maxTasksPerRobot,
         timeLimitSec: 30,
-        // Served from packages/web/public/highs.wasm (copied at build time).
-        locateFile: (file) =>
-          file.endsWith(".wasm") ? `${self.location.origin}/highs.wasm` : file,
+        locateFile,
       });
       const response: MilpResponse = {
         id,
@@ -51,7 +58,7 @@ self.onmessage = (event: MessageEvent<MilpRequest>) => {
         provenOptimal: false,
         feasible: false,
         error: err instanceof Error ? err.message : String(err),
-      });
+      } satisfies MilpResponse);
     }
   })();
 };
