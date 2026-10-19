@@ -32,12 +32,20 @@ export function App() {
           onStep={sim.step}
           onReplay={sim.replay}
         />
-        <WorldCanvas snapshot={sim.snapshot} />
+        <WorldCanvas
+          snapshot={sim.snapshot}
+          agents={sim.agents}
+          hoveredRobotId={sim.hoveredRobotId}
+          onHoverRobot={sim.setHoveredRobotId}
+        />
       </div>
       <MetricsPanel
         metrics={sim.snapshot.metrics}
         milpObjective={sim.milpObjective}
+        milpLoading={sim.milpLoading}
+        milpTimedOut={sim.milpTimedOut}
         percentOfOptimal={sim.percentOfOptimal}
+        auctionScore={sim.auctionScore}
         tick={sim.snapshot.world.tick}
       />
     </div>

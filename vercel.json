@@ -1,0 +1,6 @@
+{
+  "buildCommand": "pnpm install && pnpm --filter @swarmbid/sim build && pnpm --filter @swarmbid/baseline build && pnpm --filter @swarmbid/web build",
+  "outputDirectory": "packages/web/dist",
+  "framework": null,
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+}

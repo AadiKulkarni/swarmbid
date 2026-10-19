@@ -1,45 +1,45 @@
 /**
- * Owns Simulation lifecycle, play/pause/step/replay, and MILP baseline %.
+ * Owns Simulation lifecycle, play/pause/step/replay, and live auction metrics.
  */
 
-import { solveAssignment } from "@swarmbid/baseline";
+import { scoreAssignment } from "@swarmbid/baseline";
 import {
-  idleController,
-  Simulation,
+  createAuctionSimulation,
+  syncAssignmentsToWorld,
+  type CbbaAgent,
   type Metrics,
   type NetworkConfig,
+  type Simulation,
   type SimulationSnapshot,
   type WorldConfig,
 } from "@swarmbid/sim";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useMilpWorker } from "./useMilpWorker";
 
 export interface SimControls {
   seed: number;
   robotCount: number;
   taskCount: number;
   dropRate: number;
-  /** Used as both min and max delay for the slider. */
   delay: number;
   partitionsEnabled: boolean;
 }
 
 export interface SimView {
   snapshot: SimulationSnapshot;
-  milpObjective: number;
+  agents: Map<string, CbbaAgent>;
+  milpObjective: number | null;
+  milpLoading: boolean;
+  milpTimedOut: boolean;
   percentOfOptimal: number | null;
+  auctionScore: number;
   playing: boolean;
   setPlaying: (v: boolean) => void;
   step: () => void;
   reset: () => void;
   replay: () => void;
-}
-
-function buildControllers(robotCount: number) {
-  const map = new Map<string, typeof idleController>();
-  for (let i = 0; i < robotCount; i++) {
-    map.set(`r${i}`, idleController);
-  }
-  return map;
+  hoveredRobotId: string | null;
+  setHoveredRobotId: (id: string | null) => void;
 }
 
 function buildNetwork(controls: SimControls): Partial<NetworkConfig> {
@@ -63,7 +63,10 @@ function buildNetwork(controls: SimControls): Partial<NetworkConfig> {
   };
 }
 
-function createSim(controls: SimControls): Simulation {
+function createAuction(controls: SimControls): {
+  sim: Simulation;
+  agents: Map<string, CbbaAgent>;
+} {
   const world: WorldConfig = {
     width: 20,
     height: 20,
@@ -71,29 +74,35 @@ function createSim(controls: SimControls): Simulation {
     taskCount: controls.taskCount,
     seed: controls.seed,
   };
-  return new Simulation({
+  return createAuctionSimulation({
     world,
     network: buildNetwork(controls),
-    controllers: buildControllers(controls.robotCount),
+    maxBundleSize: 3,
   });
 }
 
-function percentOfOptimal(metrics: Metrics, milpObjective: number): number | null {
-  if (milpObjective <= 0) {
+function percentOfOptimal(auctionScore: number, milpObjective: number | null): number | null {
+  if (milpObjective === null || milpObjective <= 0) {
     return null;
   }
-  // Until auction collects reward, compare collected reward to MILP objective.
-  return (metrics.totalRewardCollected / milpObjective) * 100;
+  return (auctionScore / milpObjective) * 100;
 }
 
 export function useSimulation(controls: SimControls): SimView {
   const simRef = useRef<Simulation | null>(null);
-  const [snapshot, setSnapshot] = useState<SimulationSnapshot>(() => {
-    const sim = createSim(controls);
+  const agentsRef = useRef<Map<string, CbbaAgent>>(new Map());
+  const [agents, setAgents] = useState<Map<string, CbbaAgent>>(() => {
+    const { sim, agents: initial } = createAuction(controls);
     simRef.current = sim;
-    return sim.getState();
+    agentsRef.current = initial;
+    return initial;
   });
+  const [snapshot, setSnapshot] = useState<SimulationSnapshot>(() =>
+    syncAssignmentsToWorld(simRef.current!.getState(), agentsRef.current),
+  );
   const [playing, setPlaying] = useState(false);
+  const [hoveredRobotId, setHoveredRobotId] = useState<string | null>(null);
+
   const controlsKey = useMemo(
     () =>
       JSON.stringify({
@@ -107,16 +116,25 @@ export function useSimulation(controls: SimControls): SimView {
     [controls],
   );
 
-  const milpObjective = useMemo(() => {
-    const result = solveAssignment(snapshot.world);
-    return result.objective;
+  const milp = useMilpWorker(snapshot.world, 3);
+
+  const auctionScore = useMemo(() => {
+    const assignment = new Map<string, string>();
+    for (const robot of snapshot.world.robots) {
+      for (const taskId of robot.assignedTaskIds) {
+        assignment.set(taskId, robot.id);
+      }
+    }
+    return scoreAssignment(snapshot.world, assignment);
   }, [snapshot.world]);
 
   const reset = useCallback(() => {
     const parsed = JSON.parse(controlsKey) as SimControls;
-    const sim = createSim(parsed);
+    const { sim, agents: next } = createAuction(parsed);
     simRef.current = sim;
-    setSnapshot(sim.getState());
+    agentsRef.current = next;
+    setAgents(next);
+    setSnapshot(syncAssignmentsToWorld(sim.getState(), next));
     setPlaying(false);
   }, [controlsKey]);
 
@@ -129,7 +147,8 @@ export function useSimulation(controls: SimControls): SimView {
     if (!sim) {
       return;
     }
-    setSnapshot(sim.step());
+    const next = syncAssignmentsToWorld(sim.step(), agentsRef.current);
+    setSnapshot(next);
   }, []);
 
   const replay = useCallback(() => {
@@ -146,14 +165,22 @@ export function useSimulation(controls: SimControls): SimView {
     return () => window.clearInterval(id);
   }, [playing, step]);
 
+  void (null as Metrics | null);
+
   return {
     snapshot,
-    milpObjective,
-    percentOfOptimal: percentOfOptimal(snapshot.metrics, milpObjective),
+    agents,
+    milpObjective: milp.objective,
+    milpLoading: milp.loading,
+    milpTimedOut: milp.timedOut,
+    percentOfOptimal: percentOfOptimal(auctionScore, milp.objective),
+    auctionScore,
     playing,
     setPlaying,
     step,
     reset,
     replay,
+    hoveredRobotId,
+    setHoveredRobotId,
   };
 }
