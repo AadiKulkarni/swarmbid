@@ -18,11 +18,15 @@ export function emptyMetrics(): Metrics {
   };
 }
 
-/** Snapshot of robotId -> assignedTaskId for convergence checks. */
+/** Snapshot of robotId -> assigned task ids (sorted) for convergence checks. */
 export function assignmentMap(world: WorldState): Map<string, string | null> {
   const map = new Map<string, string | null>();
   for (const robot of world.robots) {
-    map.set(robot.id, robot.assignedTaskId);
+    const ids =
+      robot.assignedTaskIds.length > 0
+        ? [...robot.assignedTaskIds].sort().join(",")
+        : robot.assignedTaskId;
+    map.set(robot.id, ids);
   }
   return map;
 }
@@ -42,16 +46,22 @@ function mapsEqual(
   return true;
 }
 
+function claimedTaskIds(robot: { assignedTaskId: string | null; assignedTaskIds: string[] }): string[] {
+  if (robot.assignedTaskIds.length > 0) {
+    return robot.assignedTaskIds;
+  }
+  return robot.assignedTaskId !== null ? [robot.assignedTaskId] : [];
+}
+
 /**
  * Count tasks claimed by more than one robot (conflicting assignments).
  */
 export function countDoubleAssigned(world: WorldState): number {
   const counts = new Map<string, number>();
   for (const robot of world.robots) {
-    if (robot.assignedTaskId === null) {
-      continue;
+    for (const taskId of claimedTaskIds(robot)) {
+      counts.set(taskId, (counts.get(taskId) ?? 0) + 1);
     }
-    counts.set(robot.assignedTaskId, (counts.get(robot.assignedTaskId) ?? 0) + 1);
   }
   let doubles = 0;
   for (const count of counts.values()) {
@@ -64,9 +74,7 @@ export function countDoubleAssigned(world: WorldState): number {
 
 /** Tasks with no robot assignment and not yet collected. */
 export function countUnassigned(world: WorldState): number {
-  const assigned = new Set(
-    world.robots.map((r) => r.assignedTaskId).filter((id): id is string => id !== null),
-  );
+  const assigned = new Set(world.robots.flatMap((r) => claimedTaskIds(r)));
   return world.tasks.filter((t) => t.collectedBy === null && !assigned.has(t.id)).length;
 }
 

@@ -115,30 +115,59 @@ export function computeBid(input: BidInput): number {
 /**
  * Greedily grow a bundle / path up to `maxBundleSize`.
  *
- * At each step pick the unassigned-looking task with the highest marginal
- * score that beats the current winning bid `y.get(taskId)` (strictly greater,
- * matching CBBA's h_ij = I(c_ij > y_ij)). Ties break by task id.
+ * At each step pick the available task with the highest marginal score that
+ * beats the current winning bid `y.get(taskId)` (strictly greater, matching
+ * CBBA's h_ij = I(c_ij > y_ij)). Ties break by task id.
+ *
+ * When `initialBundle` / `initialPath` are provided (after a consensus
+ * release truncated the lists), growth continues from that prefix.
  */
 export function buildBundle(options: {
   robot: RobotState;
   tasks: readonly TaskState[];
   /** Current winning bids known locally (taskId → bid). Missing ⇒ 0. */
   winningBids?: ReadonlyMap<string, number>;
-  /** Tasks this robot must not re-select (already in bundle or collected). */
+  /** Tasks this robot must not re-select. */
   exclude?: ReadonlySet<string>;
   maxBundleSize?: number;
+  /** Remaining bundle prefix after consensus release. */
+  initialBundle?: readonly string[];
+  /** Remaining path prefix matching initialBundle tasks. */
+  initialPath?: readonly string[];
+  /** Prior marginal bids for tasks kept in the initial prefix. */
+  initialBids?: ReadonlyMap<string, number>;
 }): BundleBuildResult {
   const maxBundleSize = options.maxBundleSize ?? DEFAULT_MAX_BUNDLE_SIZE;
   const winningBids = options.winningBids ?? new Map<string, number>();
   const exclude = new Set(options.exclude ?? []);
+  const byId = new Map(options.tasks.map((t) => [t.id, t]));
 
-  const bundle: string[] = [];
+  const bundle: string[] = [...(options.initialBundle ?? [])];
   const pathTasks: TaskState[] = [];
-  const bids = new Map<string, number>();
+  for (const id of options.initialPath ?? []) {
+    const task = byId.get(id);
+    if (task) {
+      pathTasks.push(task);
+    }
+  }
+  // If path was not supplied, fall back to bundle order as path.
+  if (pathTasks.length === 0) {
+    for (const id of bundle) {
+      const task = byId.get(id);
+      if (task) {
+        pathTasks.push(task);
+      }
+    }
+  }
+
+  const bids = new Map<string, number>(options.initialBids ?? []);
 
   const available = () =>
     options.tasks.filter(
-      (t) => t.collectedBy === null && !exclude.has(t.id) && !bundle.includes(t.id),
+      (t) =>
+        t.collectedBy === null &&
+        !exclude.has(t.id) &&
+        !bundle.includes(t.id),
     );
 
   while (bundle.length < maxBundleSize) {

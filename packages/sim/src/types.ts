@@ -17,8 +17,10 @@ export interface RobotState {
   position: Vec2;
   /** Cells moved per tick (Manhattan steps). */
   speed: number;
-  /** Task currently claimed by this robot, if any. */
+  /** Primary claimed task (first in bundle), if any. */
   assignedTaskId: string | null;
+  /** Full CBBA bundle claims (task ids). */
+  assignedTaskIds: string[];
 }
 
 export interface TaskState {

@@ -2,17 +2,51 @@
  * @swarmbid/sim — pure TypeScript multi-robot auction simulation.
  *
  * Owns the seeded PRNG, grid world, deterministic message bus, robot
- * controller interface, metrics, and auction stubs. No UI dependencies.
+ * controller interface, metrics, and CBBA auction. No UI dependencies.
  */
 
-export { computeBid } from "./auction/bid.js";
-export type { BidInput } from "./auction/bid.js";
-export { resolveConsensus } from "./auction/consensus.js";
+export {
+  assignmentFromAgents,
+  CONSENSUS_MSG_TYPE,
+  controllersFromAgents,
+  createCbbaAgent,
+  createCbbaAgents,
+  parseConsensusMessage,
+} from "./auction/agent.js";
+export type { CbbaAgent, CbbaAgentOptions } from "./auction/agent.js";
+export {
+  bestInsertion,
+  buildBundle,
+  computeBid,
+  DEFAULT_MAX_BUNDLE_SIZE,
+  pathScore,
+  travelTime,
+} from "./auction/bid.js";
+export type { BidInput, BundleBuildResult, InsertionResult } from "./auction/bid.js";
+export {
+  applyConsensusMessage,
+  consensusActionForTask,
+  createConsensusState,
+  mergeTimestamps,
+  NO_WINNER,
+  releaseOutbidTasks,
+  resolveConsensus,
+  winningBidsFromState,
+} from "./auction/consensus.js";
 export type {
+  ConsensusAction,
   ConsensusInput,
+  ConsensusMessage,
   ConsensusResult,
+  ConsensusState,
   WinningBid,
 } from "./auction/consensus.js";
+export {
+  createAuctionSimulation,
+  runAuction,
+  syncAssignmentsToWorld,
+} from "./auction/run.js";
+export type { AuctionRunOptions, AuctionRunResult } from "./auction/run.js";
 export {
   assignmentMap,
   countDoubleAssigned,

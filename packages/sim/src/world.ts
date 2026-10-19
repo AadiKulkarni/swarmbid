@@ -42,6 +42,7 @@ export function createWorld(config: WorldConfig): WorldState {
       },
       speed: 1,
       assignedTaskId: null,
+      assignedTaskIds: [],
     });
   }
 
